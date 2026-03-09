@@ -419,3 +419,68 @@ async fn test_fuse_multiple_custom_mounts() {
         Err(_) => panic!("Test timed out"),
     }
 }
+
+/// Mount a job (cl = None) and keep FUSE running until Ctrl-C.
+///
+/// Uses multi-thread tokio runtime so FUSE can handle concurrent kernel requests
+/// while the main task waits for Ctrl-C. Single-thread (`current_thread`) would
+/// serialize all FUSE handlers and stall `ls` when Dicfuse does network IO.
+///
+/// Run with:
+/// ```bash
+/// sudo -E cargo test --test antares_test test_mount_job_no_cl_keep_running -- --ignored --nocapture
+/// ```
+///
+/// After Ctrl-C the test will attempt `fusermount -u`; if it fails, clean up manually:
+/// ```bash
+/// fusermount -uz /tmp/.tmp*/mnt/test-job-no-cl
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires FUSE privileges; runs until Ctrl-C"]
+async fn test_mount_job_no_cl_keep_running() {
+    // Enable tracing so FUSE / Dicfuse logs are visible with --nocapture.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
+
+    init_config();
+
+    let root = tempdir().unwrap();
+    let paths = AntaresPaths::new(
+        root.path().join("upper"),
+        root.path().join("cl"),
+        root.path().join("mnt"),
+        root.path().join("state.toml"),
+    );
+    let manager = AntaresManager::new(paths).await;
+
+    println!("Mounting (waiting for Dicfuse ready, may take a while if server is slow)...");
+    let config = manager.mount_job("test-job-no-cl", None).await.unwrap();
+    println!("✓ Mounted at: {}", config.mountpoint.display());
+    println!("  job_id   : {}", config.job_id);
+    println!("  upper_dir: {}", config.upper_dir.display());
+    assert_eq!(config.job_id, "test-job-no-cl");
+    assert!(config.cl_dir.is_none());
+    assert!(config.cl_id.is_none());
+    assert!(config.mountpoint.exists());
+
+    println!("FUSE is running. Try `ls {}` in another terminal.", config.mountpoint.display());
+    println!("Press Ctrl-C to stop.");
+    tokio::signal::ctrl_c().await.expect("failed to listen for Ctrl-C");
+    println!("\nCtrl-C received, unmounting...");
+
+    // Attempt clean unmount so the mountpoint doesn't become a zombie.
+    if let Err(e) = manager.umount_job("test-job-no-cl").await {
+        eprintln!("Warning: umount_job failed: {e}");
+        // Fallback: lazy unmount so the test doesn't leave a zombie mount.
+        let mp = config.mountpoint.to_string_lossy().to_string();
+        let _ = tokio::process::Command::new("fusermount")
+            .args(["-uz", &mp])
+            .output()
+            .await;
+    }
+    println!("Done.");
+}

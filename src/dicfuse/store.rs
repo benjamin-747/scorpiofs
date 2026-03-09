@@ -19,7 +19,7 @@ use once_cell::sync::Lazy;
 use reqwest::Client;
 use rfuse3::{raw::reply::ReplyEntry, FileType};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Notify, Semaphore};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use super::{
@@ -770,7 +770,7 @@ pub struct DictionaryStore {
     /// Per-directory async locks to avoid concurrent loads producing duplicate inodes.
     dir_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
     next_inode: AtomicU64,
-    radix_trie: Arc<Mutex<radix_trie::Trie<String, u64>>>,
+    radix_trie: Arc<RwLock<radix_trie::Trie<String, u64>>>,
     persistent_path_store: Arc<TreeStorage>, // persistent path store for saving and retrieving file paths
     max_depth: Arc<usize>,                   // max depth for loading directories
     pub init_notify: Arc<Notify>,            // used in dir_test to notify the start of the test..
@@ -819,7 +819,7 @@ impl DictionaryStore {
         DictionaryStore {
             next_inode: AtomicU64::new(1),
             inodes: Arc::new(Mutex::new(HashMap::new())),
-            radix_trie: Arc::new(Mutex::new(radix_trie::Trie::new())),
+            radix_trie: Arc::new(RwLock::new(radix_trie::Trie::new())),
             persistent_path_store: Arc::new(tree_store),
             dirs: Arc::new(DashMap::new()),
             dir_locks: Arc::new(DashMap::new()),
@@ -852,7 +852,7 @@ impl DictionaryStore {
         DictionaryStore {
             next_inode: AtomicU64::new(1),
             inodes: Arc::new(Mutex::new(HashMap::new())),
-            radix_trie: Arc::new(Mutex::new(radix_trie::Trie::new())),
+            radix_trie: Arc::new(RwLock::new(radix_trie::Trie::new())),
             persistent_path_store: Arc::new(tree_store),
             dirs: Arc::new(DashMap::new()),
             dir_locks: Arc::new(DashMap::new()),
@@ -916,7 +916,7 @@ impl DictionaryStore {
         DictionaryStore {
             next_inode: AtomicU64::new(1),
             inodes: Arc::new(Mutex::new(HashMap::new())),
-            radix_trie: Arc::new(Mutex::new(radix_trie::Trie::new())),
+            radix_trie: Arc::new(RwLock::new(radix_trie::Trie::new())),
             persistent_path_store: Arc::new(tree_store),
             dirs: Arc::new(DashMap::new()),
             dir_locks: Arc::new(DashMap::new()),
@@ -1124,7 +1124,7 @@ impl DictionaryStore {
         // Use radix trie as the authoritative mapping from path -> inode.
         let key = GPath::from(item.item.path.clone()).to_string();
         let existing = {
-            let trie = self.radix_trie.lock().await;
+            let trie = self.radix_trie.read().await;
             trie.get(&key).copied()
         };
 
@@ -1256,7 +1256,7 @@ impl DictionaryStore {
         if let Ok(pinode) = prw.get_item(parent) {
             // insert info to a radix_trie for path match.
             self.radix_trie
-                .lock()
+                .write()
                 .await
                 .insert(GPath::from(item.item.path.clone()).to_string(), alloc_inode);
             prw.insert_item(alloc_inode, parent, item);
@@ -1491,7 +1491,7 @@ impl DictionaryStore {
                 .unwrap()
                 .file_list
                 .insert(child_path.to_string_lossy().to_string(), false);
-            self.radix_trie.lock().await.insert(
+            self.radix_trie.write().await.insert(
                 GPath::from(child_path.to_string_lossy().to_string()).to_string(),
                 child,
             );
@@ -1581,7 +1581,7 @@ impl DictionaryStore {
         let inode = if normalized.is_empty() {
             1
         } else {
-            let binding = self.radix_trie.lock().await;
+            let binding = self.radix_trie.read().await;
             *binding
                 .get(&normalized)
                 .ok_or(io::Error::new(io::ErrorKind::NotFound, "path not found"))?
@@ -1594,7 +1594,7 @@ impl DictionaryStore {
         let inode = if path.is_empty() || path == "/" {
             1
         } else {
-            let binding = self.radix_trie.lock().await;
+            let binding = self.radix_trie.read().await;
             *binding
                 .get(&GPath::from(path.to_owned()).to_string())
                 .ok_or(io::Error::new(io::ErrorKind::NotFound, "path not found"))?
@@ -1614,7 +1614,7 @@ impl DictionaryStore {
             return Ok(PathLookupStatus::Found(1));
         }
 
-        if let Some(inode) = self.radix_trie.lock().await.get(&normalized).copied() {
+        if let Some(inode) = self.radix_trie.read().await.get(&normalized).copied() {
             return Ok(PathLookupStatus::Found(inode));
         }
 
@@ -1629,7 +1629,7 @@ impl DictionaryStore {
             return Ok(PathLookupStatus::Found(1));
         }
 
-        let trie = self.radix_trie.lock().await;
+        let trie = self.radix_trie.read().await;
         let mut ancestor_key: Option<String> = None;
         let mut ancestor_inode: Option<u64> = None;
         for i in (1..parts.len()).rev() {
@@ -1982,7 +1982,7 @@ async fn reset_store_for_import(store: &DictionaryStore) {
     store.dirs.clear();
     store.dir_locks.clear();
     store.inodes.lock().await.clear();
-    *store.radix_trie.lock().await = radix_trie::Trie::new();
+    *store.radix_trie.write().await = radix_trie::Trie::new();
 
     store.next_inode.store(1, Ordering::Relaxed);
     store.ready.store(false, Ordering::Release);
@@ -2340,18 +2340,17 @@ pub async fn import_arc(store: Arc<DictionaryStore>) {
     store.inodes.lock().await.insert(1, root_item.into());
     ensure_dir_tracked(&store.dirs, &user_root);
 
-    // Mark ready as soon as the root inode exists so Antares can mount immediately.
-    // Directory entries will be populated lazily on lookup/readdir, while import continues.
-    store.mark_ready();
-
     // Limit concurrent warmups/imports across stores to avoid remote pressure spikes.
     let _permit = global_import_semaphore()
         .acquire_owned()
         .await
         .expect("global import semaphore closed");
 
-    // Always do a shallow root listing once (best-effort). This warms the root and persists children,
-    // while still keeping mount time-to-usable low (root is already ready).
+    // Always do a shallow root listing once (best-effort). This warms the root and persists children.
+    // We intentionally do NOT mark_ready() until this succeeds, so that callers (e.g., Antares
+    // mount_job_at → wait_for_ready()) only proceed once root children are actually queryable.
+    // Without this, Buck2-like workloads that immediately traverse deep paths would hit ENOENT
+    // on the very first lookup because the root directory listing hasn't been fetched yet.
     let seeded_ok = match store.ensure_dir_loaded(1).await {
         Ok(()) => true,
         Err(e) => {
@@ -2361,6 +2360,10 @@ pub async fn import_arc(store: Arc<DictionaryStore>) {
             false
         }
     };
+
+    // Mark ready after root children are loaded. Callers waiting on wait_for_ready() (e.g.,
+    // Antares mount) can now safely resolve root-level lookups without blocking on network IO.
+    store.mark_ready();
 
     // Optional deep prewarm: disabled by default for Antares subdir mounts (max_depth=0).
     if store.max_depth() > 0 {
@@ -2758,7 +2761,7 @@ impl DictionaryStore {
 
         // Keep trie in sync so `get_by_path` works in tests.
         self.radix_trie
-            .lock()
+            .write()
             .await
             .insert(GPath::from(full_path).to_string(), inode);
     }
@@ -2954,7 +2957,7 @@ mod tests {
         DictionaryStore {
             next_inode: AtomicU64::new(1),
             inodes: Arc::new(Mutex::new(HashMap::new())),
-            radix_trie: Arc::new(Mutex::new(radix_trie::Trie::new())),
+            radix_trie: Arc::new(RwLock::new(radix_trie::Trie::new())),
             persistent_path_store: Arc::new(tree_store),
             dirs: Arc::new(DashMap::new()),
             dir_locks: Arc::new(DashMap::new()),

@@ -73,8 +73,15 @@ impl Filesystem for Dicfuse {
     async fn lookup(&self, _req: Request, parent: Inode, name: &OsStr) -> Result<ReplyEntry> {
         // Keep lookup mostly non-blocking: wait a short budget for directory refresh,
         // then continue with best-effort cache lookup and only retry once on miss.
-        const LOOKUP_REFRESH_WAIT_BUDGET_MS: u64 = 20;
-        const LOOKUP_MISS_RETRY_WAIT_BUDGET_MS: u64 = 200;
+        //
+        // Budget rationale: fetch_dir() involves an HTTP round-trip to the monorepo server.
+        // With typical server latency of 50-200ms:
+        //   - 200ms initial wait covers most warm-cache responses and avoids unnecessary
+        //     "miss → retry" round-trips that double the latency for Buck2-style deep traversals.
+        //   - 2000ms retry wait gives enough headroom for cold paths or transient server slowness
+        //     to avoid returning spurious ENOENT that break build tool path resolution.
+        const LOOKUP_REFRESH_WAIT_BUDGET_MS: u64 = 200;
+        const LOOKUP_MISS_RETRY_WAIT_BUDGET_MS: u64 = 2000;
 
         let store = self.store.clone();
 
