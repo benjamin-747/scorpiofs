@@ -2070,9 +2070,9 @@ checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
 
 [[package]]
 name = "libfuse-fs"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec549f45dd0953d4ccb016b956c9e30e5f463bb24f0e0a5ddc06987ecf402eee"
+checksum = "c5aa54193dd60028e43274b0e43fd2b68629af72714589820d1f50b97f0a8f85"
 dependencies = [
  "async-trait",
  "bitflags 2.11.0",
@@ -3568,7 +3568,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "scorpiofs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "async-recursion",

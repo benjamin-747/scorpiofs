@@ -2106,9 +2106,22 @@ pub async fn load_dir_depth(store: Arc<DictionaryStore>, parent_path: String, ma
                     },
                 );
             } else {
-                // NOTE: Do NOT prefetch file contents during directory tree loading.
-                // Dicfuse should fetch file contents on-demand on read() to keep initial load fast,
-                // especially for large monorepos.
+                // Prefetch file content within depth limit during import.
+                // Files discovered at the root level (depth 0) are always within max_depth.
+                if !it.hash.is_empty() && it.hash != EMPTY_BLOB_OID && !store.file_exists(it_inode)
+                {
+                    match fetch_file(&it.hash).await {
+                        Ok(content) => {
+                            store.save_file(it_inode, content);
+                        }
+                        Err(e) => {
+                            debug!(
+                                "[load_dir_depth] prefetch file failed (path={path:?} oid={}): {e}",
+                                it.hash
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -2230,7 +2243,23 @@ pub async fn load_dir_depth(store: Arc<DictionaryStore>, parent_path: String, ma
                                             },
                                         );
                                     } else {
-                                        // NOTE: Do NOT prefetch file contents during directory tree loading.
+                                        // Prefetch file content within depth limit during import.
+                                        if !newit.hash.is_empty()
+                                            && newit.hash != EMPTY_BLOB_OID
+                                            && !store.file_exists(new_inode)
+                                        {
+                                            match fetch_file(&newit.hash).await {
+                                                Ok(content) => {
+                                                    store.save_file(new_inode, content);
+                                                }
+                                                Err(e) => {
+                                                    debug!(
+                                                        "[load_dir_depth] prefetch file failed (path={tmp_path:?} oid={}): {e}",
+                                                        newit.hash
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }

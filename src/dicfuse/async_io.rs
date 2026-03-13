@@ -25,7 +25,7 @@ impl Filesystem for Dicfuse {
 
         // Spawn import_arc as a background task to avoid blocking FUSE mount.
         // Guarded so we don't start multiple concurrent imports for the same store
-        // (DicfuseManager may already have started one).
+        // (DicfuseManager or Antares service may already have started one via start_import()).
         if s.try_start_import() {
             tokio::spawn(async move {
                 super::store::import_arc(s).await;
@@ -368,7 +368,22 @@ impl Filesystem for Dicfuse {
     /// I/O and not store anything in `fh`.  A file system need not implement this method if it
     /// sets [`MountOptions::no_open_dir_support`][crate::MountOptions::no_open_dir_support] and
     /// if the kernel supports `FUSE_NO_OPENDIR_SUPPORT`.
-    async fn opendir(&self, _req: Request, _inode: Inode, _flags: u32) -> Result<ReplyOpen> {
+    async fn opendir(&self, _req: Request, inode: Inode, _flags: u32) -> Result<ReplyOpen> {
+        // Prefetch directory children in the background so that the subsequent
+        // readdir/readdirplus call finds the data already cached.
+        // This is a fire-and-forget optimisation: if it finishes before readdir
+        // arrives the listing is instant; if not, readdir's own ensure_dir_loaded
+        // will wait for the same lock-guarded fetch.
+        let store = self.store.clone();
+        tokio::spawn(async move {
+            if let Err(e) = store.ensure_dir_loaded(inode).await {
+                tracing::debug!(
+                    "dicfuse: opendir prefetch for inode {} failed: {}",
+                    inode,
+                    e
+                );
+            }
+        });
         Ok(ReplyOpen { fh: 0, flags: 0 })
     }
 
@@ -398,6 +413,29 @@ impl Filesystem for Dicfuse {
         }
 
         tracing::debug!("dicfuse: open inode {} (read-only)", inode);
+
+        // Eagerly fetch file content on open so that subsequent read() calls can
+        // be served from cache.  This is the ONLY place (besides import_arc
+        // depth-based prefetch) where Dicfuse triggers content downloads.
+        if self.readable {
+            let item = self.store.get_inode(inode).await?;
+            if !item.is_dir()
+                && !item.hash.is_empty()
+                && item.hash != super::store::EMPTY_BLOB_OID
+                && !self.store.file_exists(inode)
+            {
+                if let Err(e) = self.store.fetch_file_content(inode, &item.hash).await {
+                    tracing::warn!(
+                        "dicfuse: open prefetch failed for inode {} oid {}: {}",
+                        inode,
+                        item.hash,
+                        e
+                    );
+                    // Non-fatal: read() will retry on-demand.
+                }
+            }
+        }
+
         Ok(ReplyOpen { fh: 0, flags: 0 })
     }
     /// read data. Read should send exactly the number of bytes requested except on EOF or error,
@@ -542,12 +580,11 @@ impl Filesystem for Dicfuse {
         Err(std::io::Error::from_raw_os_error(libc::EIO).into())
     }
     async fn access(&self, _req: Request, inode: Inode, _mask: u32) -> Result<()> {
-        // Access is a metadata permission check; keep it lightweight.
-        // For directories, ensure at least one children listing exists (lazy).
-        let item = self.store.get_inode(inode).await?;
-        if item.is_dir() {
-            self.store.ensure_dir_loaded(inode).await?;
-        }
+        // Read-only filesystem: all inodes are accessible. Just verify the inode exists.
+        // Do NOT trigger ensure_dir_loaded here — it causes an unnecessary network
+        // round-trip during the access() → opendir() → readdir() sequence.
+        // Directory children will be loaded lazily in opendir()/readdir().
+        let _item = self.store.get_inode(inode).await?;
         Ok(())
     }
 

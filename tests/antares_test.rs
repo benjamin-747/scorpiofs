@@ -467,9 +467,14 @@ async fn test_mount_job_no_cl_keep_running() {
     assert!(config.cl_id.is_none());
     assert!(config.mountpoint.exists());
 
-    println!("FUSE is running. Try `ls {}` in another terminal.", config.mountpoint.display());
+    println!(
+        "FUSE is running. Try `ls {}` in another terminal.",
+        config.mountpoint.display()
+    );
     println!("Press Ctrl-C to stop.");
-    tokio::signal::ctrl_c().await.expect("failed to listen for Ctrl-C");
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for Ctrl-C");
     println!("\nCtrl-C received, unmounting...");
 
     // Attempt clean unmount so the mountpoint doesn't become a zombie.
