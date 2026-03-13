@@ -129,12 +129,13 @@ struct AntaresState {
 }
 
 /// Manager responsible for creating and tracking Antares overlay instances.
-/// This scaffold currently wires directory creation and bookkeeping; the unionfs
-/// integration will be added once the layer stack is finalized.
 pub struct AntaresManager {
     dic: Arc<Dicfuse>,
     paths: AntaresPaths,
     instances: Arc<Mutex<HashMap<String, AntaresConfig>>>,
+    /// Active FUSE handles keyed by job_id. Stored separately from `AntaresConfig`
+    /// because `AntaresFuse` is not serializable.
+    fuse_handles: Arc<Mutex<HashMap<String, fuse::AntaresFuse>>>,
 }
 
 impl AntaresManager {
@@ -146,6 +147,7 @@ impl AntaresManager {
             dic,
             paths,
             instances: Arc::new(Mutex::new(instances)),
+            fuse_handles: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -222,6 +224,51 @@ impl AntaresManager {
         }
         std::fs::create_dir_all(&mountpoint)?;
 
+        // Wait for Dicfuse directory tree to be fully loaded before mounting.
+        // Without this, the FUSE mount would start with an empty directory tree
+        // and callers would get "file not found" errors (e.g., buck2 looking for .buckconfig).
+        const DICFUSE_INIT_TIMEOUT_SECS: u64 = 120;
+        tracing::info!(
+            "antares: mount_job_at waiting for Dicfuse ready (timeout: {}s)",
+            DICFUSE_INIT_TIMEOUT_SECS
+        );
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(DICFUSE_INIT_TIMEOUT_SECS),
+            self.dic.store.wait_for_ready(),
+        )
+        .await
+        {
+            Ok(_) => {
+                tracing::info!("antares: mount_job_at Dicfuse ready");
+            }
+            Err(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "Dicfuse initialization timed out after {}s for job {}",
+                        DICFUSE_INIT_TIMEOUT_SECS, job_id
+                    ),
+                ));
+            }
+        }
+
+        // Create AntaresFuse and mount the union filesystem
+        let mut antares_fuse = fuse::AntaresFuse::new(
+            mountpoint.clone(),
+            self.dic.clone(),
+            upper_dir.clone(),
+            cl_dir.clone(),
+        )
+        .await?;
+
+        antares_fuse.mount().await?;
+
+        tracing::info!(
+            "antares: mount_job_at FUSE mounted job_id={} mountpoint={}",
+            job_id,
+            mountpoint.display()
+        );
+
         let instance = AntaresConfig {
             job_id: job_id.to_string(),
             mountpoint,
@@ -236,6 +283,12 @@ impl AntaresManager {
             .await
             .insert(job_id.to_string(), instance.clone());
 
+        // Store the FUSE handle for later unmount
+        self.fuse_handles
+            .lock()
+            .await
+            .insert(job_id.to_string(), antares_fuse);
+
         self.persist_state().await?;
 
         tracing::info!(
@@ -249,9 +302,9 @@ impl AntaresManager {
 
     /// Unmount the FUSE filesystem and remove bookkeeping for a job.
     ///
-    /// Attempts to unmount the filesystem using `fusermount -u`. If the filesystem
-    /// is not mounted (e.g., it was never mounted or already unmounted), the unmount
-    /// attempt will fail but the function will still remove the bookkeeping entry.
+    /// First attempts to unmount using the stored FUSE handle (proper teardown).
+    /// Falls back to `fusermount -u` if no handle is available.
+    /// Bookkeeping is always removed regardless of unmount outcome.
     pub async fn umount_job(&self, job_id: &str) -> std::io::Result<Option<AntaresConfig>> {
         use tracing::{info, warn};
 
@@ -262,36 +315,55 @@ impl AntaresManager {
             None => return Ok(None),
         };
 
-        // Attempt to unmount the FUSE mount
         let mount_path = &config.mountpoint;
         info!("Attempting to unmount FUSE mount at {:?}", mount_path);
 
-        let output = tokio::process::Command::new("fusermount")
-            .arg("-u")
-            .arg(mount_path)
-            .output()
-            .await?;
-
-        if !output.status.success() {
-            let error_msg = String::from_utf8_lossy(&output.stderr);
-            // Check if the error is because the filesystem is not mounted
-            // In this case, we still proceed to remove bookkeeping
-            if error_msg.contains("not mounted") || error_msg.contains("Invalid argument") {
-                warn!(
-                    "Filesystem at {:?} is not mounted, removing bookkeeping only: {}",
-                    mount_path, error_msg
-                );
-            } else {
-                warn!(
-                    "fusermount -u failed with status {} for {:?}: {}",
-                    output.status, mount_path, error_msg
-                );
-                // For other errors, we still remove bookkeeping to avoid stale entries
-                // but log the warning
+        // Try to unmount via the stored FUSE handle first (proper teardown)
+        let mut fuse_handles = self.fuse_handles.lock().await;
+        if let Some(mut fuse) = fuse_handles.remove(job_id) {
+            match fuse.unmount().await {
+                Ok(()) => {
+                    info!("Successfully unmounted {:?} via FUSE handle", mount_path);
+                }
+                Err(e) => {
+                    warn!(
+                        "FUSE handle unmount failed for {:?}: {}, falling back to fusermount",
+                        mount_path, e
+                    );
+                    // Fallback to fusermount -u
+                    let _ = tokio::process::Command::new("fusermount")
+                        .arg("-u")
+                        .arg(mount_path)
+                        .output()
+                        .await;
+                }
             }
         } else {
-            info!("Successfully unmounted {:?}", mount_path);
+            // No FUSE handle available, use fusermount directly
+            let output = tokio::process::Command::new("fusermount")
+                .arg("-u")
+                .arg(mount_path)
+                .output()
+                .await?;
+
+            if !output.status.success() {
+                let error_msg = String::from_utf8_lossy(&output.stderr);
+                if error_msg.contains("not mounted") || error_msg.contains("Invalid argument") {
+                    warn!(
+                        "Filesystem at {:?} is not mounted, removing bookkeeping only: {}",
+                        mount_path, error_msg
+                    );
+                } else {
+                    warn!(
+                        "fusermount -u failed with status {} for {:?}: {}",
+                        output.status, mount_path, error_msg
+                    );
+                }
+            } else {
+                info!("Successfully unmounted {:?} via fusermount", mount_path);
+            }
         }
+        drop(fuse_handles);
 
         // Remove from bookkeeping and persist (even if unmount failed)
         let removed = instances.remove(job_id);
