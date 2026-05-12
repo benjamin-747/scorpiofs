@@ -667,6 +667,9 @@ impl AntaresServiceImpl {
             Some(d) => d,
             None => DicfuseManager::global().await,
         };
+        // Trigger import as early as possible so directory tree loading begins
+        // before any mount requests arrive. Idempotent: no-op if already started.
+        dic.start_import();
         let state_file = PathBuf::from(crate::util::config::antares_state_file());
         Self {
             dicfuse: dic,

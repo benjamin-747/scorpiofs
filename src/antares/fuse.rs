@@ -105,10 +105,38 @@ impl AntaresFuse {
 
         self.fuse_task = Some(fuse_task);
 
-        tracing::info!(
-            "Mount spawned for {}; FUSE session running (Dicfuse may still be loading in background)",
-            self.mountpoint.display()
-        );
+        // Readiness probe: wait until the FUSE mount is actually servicing requests.
+        // Without this, callers (e.g., Buck2) that immediately stat() the mountpoint
+        // may race against the kernel FUSE_INIT handshake and get ENOTCONN (errno 107).
+        let mp = self.mountpoint.clone();
+        let probe_timeout = std::time::Duration::from_secs(10);
+        let probe_interval = std::time::Duration::from_millis(50);
+        let probe_start = std::time::Instant::now();
+        loop {
+            match tokio::fs::metadata(&mp).await {
+                Ok(_) => {
+                    tracing::info!(
+                        "FUSE mount ready at {} (probe took {:.2}s)",
+                        mp.display(),
+                        probe_start.elapsed().as_secs_f64()
+                    );
+                    break;
+                }
+                Err(e) => {
+                    if probe_start.elapsed() >= probe_timeout {
+                        tracing::warn!(
+                            "FUSE mount probe timed out for {} after {:.1}s: {}",
+                            mp.display(),
+                            probe_timeout.as_secs_f64(),
+                            e
+                        );
+                        break;
+                    }
+                    tokio::time::sleep(probe_interval).await;
+                }
+            }
+        }
+
         Ok(())
     }
 

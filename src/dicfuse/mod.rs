@@ -6,15 +6,11 @@ mod size_store;
 pub mod store;
 mod tree_store;
 
-use std::{
-    ffi::{OsStr, OsString},
-    sync::Arc,
-    time::Duration,
-};
+use std::{ffi::OsStr, sync::Arc, time::Duration};
 
 pub use manager::DicfuseManager;
 
-use crate::{manager::fetch::fetch_tree, util::config};
+use crate::util::config;
 
 /// Compute the backing store directory for a given base path.
 ///
@@ -40,12 +36,10 @@ pub(crate) fn compute_store_dir_for_base_path_with_store_root(
 }
 
 use async_trait::async_trait;
-use git_internal::internal::object::tree::TreeItemMode;
 use libfuse_fs::{
     context::OperationContext,
     unionfs::{layer::Layer, Inode},
 };
-use reqwest::Client;
 use rfuse3::{
     raw::reply::{ReplyCreated, ReplyEntry},
     Result,
@@ -206,6 +200,20 @@ impl Dicfuse {
         }
     }
 
+    /// Start the background import task (directory tree loading + depth-based content prefetch).
+    ///
+    /// This should be called as early as possible (e.g., from antares service or DicfuseManager)
+    /// instead of waiting for the FUSE `init()` callback. The call is idempotent: only the first
+    /// invocation actually spawns the import task.
+    pub fn start_import(&self) {
+        if self.store.try_start_import() {
+            let s = self.store.clone();
+            tokio::spawn(async move {
+                store::import_arc(s).await;
+            });
+        }
+    }
+
     pub async fn new_with_store_path(store_path: &str) -> Self {
         Self {
             readable: config::dicfuse_readable(),
@@ -297,155 +305,6 @@ impl Dicfuse {
         }
         e.attr.size = self.store.get_persisted_size(item.get_inode()).unwrap_or(0);
         e
-    }
-    async fn load_one_file(&self, parent: u64, name: &OsStr) -> std::io::Result<()> {
-        if !self.readable {
-            return Ok(());
-        }
-
-        let mut parent_item = self.store.find_path(parent).await.unwrap();
-        let tree = fetch_tree(&parent_item).await.unwrap();
-
-        let file_blob_endpoint = config::file_blob_endpoint();
-
-        let client = Client::new();
-        for i in tree.tree_items {
-            let name_os = OsString::from(&i.name);
-            if name_os != name {
-                continue;
-            } else if i.mode != TreeItemMode::Blob && i.mode != TreeItemMode::BlobExecutable {
-                return Ok(());
-            }
-
-            let url = format!("{}/{}", file_blob_endpoint, i.id);
-            // Send GET request
-            let response = client
-                .get(url)
-                .send()
-                .await
-                .map_err(std::io::Error::other)?;
-
-            // Ensure that the response status is successful
-            if response.status().is_success() {
-                // Get the binary data from the response body
-                let content = response.bytes().await.map_err(std::io::Error::other)?;
-
-                // Store the content in a Vec<u8>
-                let data: Vec<u8> = content.to_vec();
-                //let child_osstr = OsStr::new(&i.name);
-                parent_item.push(i.name.clone());
-
-                let it_temp = self.store.get_by_path(&parent_item.to_string()).await?;
-                self.store.save_file(it_temp.get_inode(), data);
-                if i.mode == TreeItemMode::BlobExecutable {
-                    self.store.set_executable(it_temp.get_inode(), true);
-                }
-            } else {
-                eprintln!("Request failed with status: {}", response.status());
-            }
-            break;
-        }
-        Ok(())
-    }
-    pub async fn load_files(&self, parent_item: StorageItem, items: &Vec<StorageItem>) {
-        if !self.readable {
-            return;
-        }
-        if self.store.file_exists(parent_item.get_inode()) {
-            return;
-        }
-        let gpath = match self.store.find_path(parent_item.get_inode()).await {
-            Some(p) => p,
-            None => {
-                tracing::warn!(
-                    "load_files: find_path missing for inode {}",
-                    parent_item.get_inode()
-                );
-                return;
-            }
-        };
-        let tree = match fetch_tree(&gpath).await {
-            Ok(t) => t,
-            Err(err) => {
-                tracing::warn!(
-                    "load_files: fetch_tree failed for path {}: {err}",
-                    gpath.to_string()
-                );
-                return;
-            }
-        };
-        let mut is_first = true;
-        let client = Client::new();
-        let file_blob_endpoint = config::file_blob_endpoint();
-        for i in tree.tree_items {
-            // Symlinks (TreeItemMode::Link) and subtrees are skipped during
-            // file preloading.  Symlink support requires storing the link
-            // target in DictionaryStore and returning it via readlink(); this
-            // is not yet implemented.
-            if i.mode != TreeItemMode::Blob && i.mode != TreeItemMode::BlobExecutable {
-                if i.mode == TreeItemMode::Link {
-                    tracing::debug!(name = %i.name, "load_files: skipping symlink (not yet supported)");
-                }
-                continue;
-            }
-            let url = format!("{}/{}", file_blob_endpoint, i.id);
-            // Send GET request
-            let response = match client.get(url).send().await {
-                Ok(resp) => resp,
-                Err(err) => {
-                    tracing::warn!("load_files: request failed for {}: {err}", i.id);
-                    continue;
-                }
-            };
-
-            // Ensure that the response status is successful
-            if response.status().is_success() {
-                // Get the binary data from the response body
-                let content = match response.bytes().await {
-                    Ok(b) => b,
-                    Err(err) => {
-                        tracing::warn!("load_files: read body failed for {}: {err}", i.id);
-                        continue;
-                    }
-                };
-
-                // Store the content in a Vec<u8>
-                let data: Vec<u8> = content.to_vec();
-
-                // Get the hit inodes.
-                let mut hit_inodes: Option<u64> = None;
-                for it in items {
-                    if it.name.eq(&i.name) {
-                        hit_inodes = Some(it.get_inode());
-                        break;
-                    }
-                }
-                let Some(hit_inodes) = hit_inodes else {
-                    tracing::warn!(
-                        "load_files: inode not found for name {} in parent {}",
-                        i.name,
-                        gpath.to_string()
-                    );
-                    continue;
-                };
-
-                // Look up the buff, find Loaded file.
-                if is_first {
-                    if self.store.file_exists(hit_inodes) {
-                        // if the file is already exists, no need to load again.
-                        break;
-                    }
-                    self.store.save_file(hit_inodes, data);
-                    if i.mode == TreeItemMode::BlobExecutable {
-                        self.store.set_executable(hit_inodes, true);
-                    }
-                    is_first = false;
-                }
-            } else {
-                tracing::warn!(name = %i.name, status = %response.status(), "load_files: HTTP request failed");
-            }
-        }
-        self.store.save_file(parent_item.get_inode(), Vec::new());
     }
 }
 

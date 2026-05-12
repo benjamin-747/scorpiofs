@@ -105,14 +105,8 @@ impl DicfuseManager {
         GLOBAL_DICFUSE
             .get_or_init(|| async {
                 let dicfuse = Arc::new(Dicfuse::new().await);
-                // Trigger import_arc immediately so directory tree starts loading.
-                // Guarded so we don't start multiple concurrent imports for the same store.
-                if dicfuse.store.try_start_import() {
-                    let store_clone = dicfuse.store.clone();
-                    tokio::spawn(async move {
-                        super::store::import_arc(store_clone).await;
-                    });
-                }
+                // Trigger import immediately so directory tree starts loading.
+                dicfuse.start_import();
                 dicfuse
             })
             .await
@@ -170,16 +164,10 @@ impl DicfuseManager {
                 Dicfuse::new_with_base_path_and_store_path(&normalized, &store_path).await,
             );
 
-            // IMPORTANT: Trigger import_arc immediately so the directory tree starts loading.
-            // This is necessary because `import_arc` is normally called in `Filesystem::init()`
-            // when FUSE mounts, but callers may need to wait_for_ready() BEFORE mounting
+            // Trigger import immediately so the directory tree starts loading.
+            // This is necessary because callers may need to wait_for_ready() BEFORE mounting
             // (e.g., the Antares daemon needs the root inode to be set up first).
-            if dicfuse.store.try_start_import() {
-                let store_clone = dicfuse.store.clone();
-                tokio::spawn(async move {
-                    super::store::import_arc(store_clone).await;
-                });
-            }
+            dicfuse.start_import();
 
             dicfuse
         })
