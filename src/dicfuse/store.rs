@@ -2046,6 +2046,13 @@ pub async fn load_dir_depth(store: Arc<DictionaryStore>, parent_path: String, ma
         "[load_dir_depth] fetched {} items (user={parent_path:?} real={real_parent_path:?})",
         items.len()
     );
+    debug!(
+        "[load_dir_depth] item names (user={parent_path:?}): {:?}",
+        items
+            .iter()
+            .map(|it| it.item.name.as_str())
+            .collect::<Vec<_>>()
+    );
     // only count the directories.
     let dir_count = items.iter().filter(|it| it.item.is_dir()).count();
     let file_count = items.len() - dir_count;

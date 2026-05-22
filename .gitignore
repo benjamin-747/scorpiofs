@@ -5,3 +5,7 @@ test_config.toml
 target/
 .vscode/
 __pycache__/
+
+# Mac
+.DS_Store
+**/*.dylib
