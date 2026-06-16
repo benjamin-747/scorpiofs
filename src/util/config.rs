@@ -59,8 +59,27 @@ const DEFAULT_ANTARES_DICFUSE_REPLY_TTL_SECS: u64 = 60;
 const DEFAULT_ANTARES_DICFUSE_OPEN_BUFF_MAX_BYTES: u64 = 64 * 1024 * 1024; // 64MiB
 const DEFAULT_ANTARES_DICFUSE_OPEN_BUFF_MAX_FILES: usize = 1024;
 
-// Global configuration management
+// Global configuration management.
+//
+// We intentionally use two separate `OnceLock`s instead of a single one:
+//
+// - `SCORPIO_CONFIG` holds the *explicit* configuration loaded via
+//   `init_config()`. This is the source of truth in production.
+// - `DEFAULT_CONFIG` is a fallback that is lazily initialized the first
+//   time any accessor is called before `init_config()` has succeeded.
+//
+// Why two locks instead of "init defaults, then replace on init_config"?
+//
+// Some library consumers (e.g. orion's `warmup_dicfuse`) read a few
+// accessors for diagnostic logging *before* they get a chance to call
+// `init_config()`. With a single `OnceLock`, that early read would lock
+// the defaults in place and the later `init_config(path)` would fail with
+// "Configuration already initialized", silently leaving the wrong values
+// (e.g. `base_url = http://localhost:8000`) active. Splitting the two
+// states lets `init_config()` always take precedence while still keeping
+// accessors `&'static str` (both lock contents live for the whole process).
 static SCORPIO_CONFIG: OnceLock<ScorpioConfig> = OnceLock::new();
+static DEFAULT_CONFIG: OnceLock<ScorpioConfig> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DicfuseStatMode {
@@ -77,7 +96,18 @@ fn parse_stat_mode(v: Option<&String>, default: DicfuseStatMode) -> DicfuseStatM
     }
 }
 
-/// Initialize global configuration
+/// Initialize global configuration from a TOML file.
+///
+/// Returns `Err("Configuration already initialized")` if `init_config` has
+/// previously succeeded — calling it twice with different paths is treated
+/// as a programmer error.
+///
+/// It is, however, safe to call `init_config()` *after* an accessor has
+/// already triggered the lazy `DEFAULT_CONFIG` fallback in `get_config()`.
+/// In that case the defaults remain in `DEFAULT_CONFIG` (kept alive so
+/// previously handed-out `&'static str` references stay valid) and the
+/// freshly loaded values are installed into `SCORPIO_CONFIG`. All
+/// subsequent reads see the explicit values.
 ///
 /// # Arguments
 /// * `path` - Path to the configuration file
@@ -261,16 +291,32 @@ fn set_defaults(config: &mut HashMap<String, String>, path: &str) -> ConfigResul
     Ok(())
 }
 
-/// Get reference to global configuration
+/// Get reference to global configuration.
 ///
-/// # Panics
-/// Panics if configuration hasn't been initialized
-/// Get reference to global configuration, or generate a default one if not initialized.
+/// Resolution order:
+/// 1. The explicit config installed by `init_config()` (production path).
+/// 2. A lazily-built default config (`DEFAULT_CONFIG`) if no explicit config
+///    has been installed yet. This keeps tests and ad-hoc usage runnable
+///    without forcing every caller to call `init_config()`.
 ///
-/// If the configuration hasn't been initialized, this will create a default config
-/// (with sensible defaults) and initialize the global config with it.
+/// Critically, the default config is stored in its own `OnceLock`, so a
+/// later successful `init_config()` call will still take effect: subsequent
+/// reads see the explicit values via branch (1), and any `&'static str`
+/// references handed out from branch (2) remain valid (they just point at
+/// the now-stale defaults; both maps live for the program lifetime).
 fn get_config() -> &'static ScorpioConfig {
-    SCORPIO_CONFIG.get_or_init(|| {
+    if let Some(cfg) = SCORPIO_CONFIG.get() {
+        return cfg;
+    }
+
+    DEFAULT_CONFIG.get_or_init(|| {
+        // Log once when we fall back so this is easy to spot in the logs
+        // if it ever happens in production again. (Keep at debug level
+        // to avoid noise in tests, which legitimately hit this path.)
+        tracing::debug!(
+            "Scorpio config accessed before init_config(); using built-in defaults. \
+             A later init_config() will override these values."
+        );
         // Generate sensible defaults
         let username = whoami::username();
         // Prefer a writable, container-friendly default. Users can still override via scorpio.toml.
