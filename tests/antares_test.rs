@@ -43,6 +43,9 @@ fn init_config() {
 #[tokio::test]
 async fn test_mount_and_list_registers_instance() {
     init_config();
+    if !fuse_prereqs_available() {
+        return;
+    }
 
     let root = tempdir().unwrap();
     let paths = AntaresPaths::new(
@@ -75,6 +78,9 @@ async fn test_mount_and_list_registers_instance() {
 #[tokio::test]
 async fn test_mount_job_at_custom_path() {
     init_config();
+    if !fuse_prereqs_available() {
+        return;
+    }
 
     let root = tempdir().unwrap();
     let custom_mount = root.path().join("custom_mountpoint");
@@ -117,6 +123,9 @@ async fn test_mount_job_at_custom_path() {
 #[tokio::test]
 async fn test_mount_job_at_multiple_custom_paths() {
     init_config();
+    if !fuse_prereqs_available() {
+        return;
+    }
 
     let root = tempdir().unwrap();
     let paths = AntaresPaths::new(
@@ -161,6 +170,9 @@ async fn test_mount_job_at_multiple_custom_paths() {
 #[tokio::test]
 async fn test_mount_job_at_with_pathbuf() {
     init_config();
+    if !fuse_prereqs_available() {
+        return;
+    }
 
     let root = tempdir().unwrap();
     let paths = AntaresPaths::new(
