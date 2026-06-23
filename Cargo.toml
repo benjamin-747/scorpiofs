@@ -22,7 +22,7 @@ reqwest = { version = "0.13.1", features = ["json", "blocking"] }
 serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.49.0", features = ["full"] }
 axum = { version = "0.8.8", features = ["macros"] }
-rfuse3 = { git = "https://github.com/rk8s-dev/rk8s.git", branch = "codex/stabilize-libfuse-buck2-races", features = [
+rfuse3 = { version = "0.0.8", git = "https://github.com/rk8s-dev/rk8s.git", branch = "codex/stabilize-libfuse-buck2-races", features = [
     "tokio-runtime",
     "unprivileged",
     "file-lock",
@@ -43,7 +43,7 @@ async-recursion = "1.1.1"
 bytes = "1.11.1"
 futures = "0.3.31"
 uuid = { version = "1.20.0", features = ["v4"] }
-libfuse-fs = { git = "https://github.com/rk8s-dev/rk8s.git", branch = "codex/stabilize-libfuse-buck2-races" }
+libfuse-fs = { version = "0.1.13", git = "https://github.com/rk8s-dev/rk8s.git", branch = "codex/stabilize-libfuse-buck2-races" }
 whoami = "1.6.0"
 thiserror = "2.0.18"
 crossbeam = "0.8.4"

@@ -2083,7 +2083,7 @@ checksum = "6800badb6cb2082ffd7b6a67e6125bb39f18782f793520caee8cb8846be06112"
 [[package]]
 name = "libfuse-fs"
 version = "0.1.13"
-source = "git+https://github.com/rk8s-dev/rk8s.git?branch=codex%2Fstabilize-libfuse-buck2-races#babb85b837907578144366982368c38c4ee4ba32"
+source = "git+https://github.com/rk8s-dev/rk8s.git?branch=codex%2Fstabilize-libfuse-buck2-races#d3e055a7a3abaf2a8d49e1ff46e110fa76365287"
 dependencies = [
  "async-trait",
  "bitflags 2.11.0",
@@ -3302,7 +3302,7 @@ dependencies = [
 [[package]]
 name = "rfuse3"
 version = "0.0.8"
-source = "git+https://github.com/rk8s-dev/rk8s.git?branch=codex%2Fstabilize-libfuse-buck2-races#babb85b837907578144366982368c38c4ee4ba32"
+source = "git+https://github.com/rk8s-dev/rk8s.git?branch=codex%2Fstabilize-libfuse-buck2-races#d3e055a7a3abaf2a8d49e1ff46e110fa76365287"
 dependencies = [
  "aligned_box",
  "async-notify",
