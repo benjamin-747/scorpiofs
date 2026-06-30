@@ -1,0 +1,11 @@
+*.log
+init_test_d.db
+path.db
+test_config.toml
+target/
+.vscode/
+__pycache__/
+
+# Mac
+.DS_Store
+**/*.dylib
