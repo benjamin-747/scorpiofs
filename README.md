@@ -55,37 +55,70 @@ https://crates.io/crates/scorpiofs
 
 ### How to Use?
 
-1. run the mono server in `localhost:8000`.
-2. config the `mount_path` and `store_path` in the `config.toml`
-3. `cargo run ` in the `scorpio` dictionary.
+**Prerequisites:** Linux with FUSE enabled, `libfuse-dev`, and a running Mega/monorepo server. See [docs/develop.md](docs/develop.md) for system setup (may require `sudo` for FUSE).
+
+1. Start the mono server (e.g. `http://localhost:8000`).
+2. Edit **`scorpio.toml`** (not `config.toml`): set `base_url`, `workspace`, and `store_path`. The `config.toml` file is a **runtime state file** (tracks mounted workspaces), created automatically on first run.
+3. Build and run the main binary:
 
 ```bash
-Command line arguments for the application
+cargo build --release
+cargo run --release -- --config-path scorpio.toml --http-addr 0.0.0.0:2725
+```
 
+```bash
 Usage: scorpio [OPTIONS]
 
 Options:
   -c, --config-path <CONFIG_PATH>  Path to the configuration file [default: scorpio.toml]
+      --http-addr <HTTP_ADDR>      HTTP bind address [default: 0.0.0.0:2725]
+```
+
+The `antares` binary provides overlay mount management (CLI and optional standalone HTTP server on port 2726):
+
+```bash
+cargo run --release --bin antares -- --config-path scorpio.toml list
+cargo run --release --bin antares -- serve --bind 0.0.0.0:2726
 ```
 
 ### How to Interact?
 
-The following interfaces are currently available:
+**Recommended — Antares API** (nested under the main server at `/antares/*`):
+
 ```bash
-curl -X POST http://localhost:2725/api/fs/mount      -H "Content-Type: application/json"      -d '{"path": "third-party/mega/scorpio"}'
-curl -X GET http://localhost:2725/api/fs/mpoint
-curl -X POST http://localhost:2725/api/fs/unmount      -H "Content-Type: application/json"      -d '{"path": "third-party/mega/scorpio"}'
-curl -X POST http://localhost:2725/api/fs/mount      -H "Content-Type: application/json"      -d '{"path": "third-party/mega/ts"}'
+curl http://localhost:2725/antares/health
+curl -X POST http://localhost:2725/antares/mounts \
+  -H "Content-Type: application/json" \
+  -d '{"job_id":"job-1","path":"/third-party/mega"}'
+curl http://localhost:2725/antares/mounts
 ```
+
+See [docs/antares.md](docs/antares.md) for the full Antares API (including `GET /antares/mounts/{id}/ready`).
+
+**Legacy API** (`/api/fs/*`, still supported):
+
+```bash
+curl -X POST http://localhost:2725/api/fs/mount \
+  -H "Content-Type: application/json" \
+  -d '{"path": "third-party/mega/scorpio"}'
+curl http://localhost:2725/api/fs/mpoint
+curl http://localhost:2725/api/fs/select/<request_id>
+curl -X POST http://localhost:2725/api/fs/unmount \
+  -H "Content-Type: application/json" \
+  -d '{"path": "third-party/mega/scorpio"}'
+```
+
+See [docs/api.md](docs/api.md) for request/response details.
 
 ### How to Configure?
 
-There is a example of `scorpio.toml` in the `scorpio` dictionary.
+An example `scorpio.toml` is included in the repository root:
+
 ```toml
 base_url = "http://localhost:8000"
 lfs_url = "http://localhost:8000"
-store_path = "/home/luxian/megadir/store"
-workspace = "/home/luxian/megadir/mount"
+store_path = "/tmp/scorpio-megadir/store"
+workspace = "/tmp/scorpio-megadir/mount"
 config_file = "config.toml"
 git_author = "MEGA"
 git_email = "admin@mega.org"
@@ -93,34 +126,20 @@ dicfuse_readable = "true"
 load_dir_depth = "3"
 fetch_file_thread = "10"
 ```
-### `scorpio.toml` Configuration Guide:  
 
-- **`base_url`**  
-  Base URL for service APIs (e.g., `http://localhost:8000` for local development).  
+### `scorpio.toml` Configuration Guide
 
-- **`lfs_url`**  
-  Dedicated URL for Large File Storage (LFS), typically matching `base_url`.  
+- **`base_url`** — Mega/monorepo service base URL (e.g. `http://localhost:8000`).
+- **`lfs_url`** — LFS endpoint URL (typically same host as `base_url`).
+- **`workspace`** — FUSE mount point visible to users (not `mount_path`).
+- **`store_path`** — Local directory for cached/stored files (must be writable).
+- **`config_file`** — Runtime state file path (default `config.toml`; records `works=[]` mounted paths). This is **not** the main config file.
+- **`git_author`** / **`git_email`** — Default Git author metadata.
+- **`dicfuse_readable`** — Allow reading from read-only directories (`"true"` / `"false"`).
+- **`load_dir_depth`** — Directory preload depth during initialization.
+- **`fetch_file_thread`** — Concurrent download thread count.
 
-- **`store_path`**  
-  Physical path for storing files (ensure write permissions).  
-
-- **`workspace`**  
-  User-visible workspace mount path (i.e., the FUSE filesystem mount point)
-
-- **`config_file`**  
-  Extended configuration filename (default: `config.toml`).  
-
-- **`git_author`** / **`git_email`**  
-  Default Git author metadata (for version tracking). 
-
-- **`dicfuse_readable`**  
-  Allow reading file contents from a read-only directory.
-
-- **`load_dir_depth`**  
-  Specifies how deep the file system should load and preload directories during initialization.
-
-- **`fetch_file_thread`**  
-  Sets the number of threads used for downloading files concurrently.
+Antares-specific keys use flat names in `scorpio.toml` (e.g. `antares_mount_root`, `antares_upper_root`). See [docs/antares.md](docs/antares.md#配置) for the full list.
 
 ### How to Contribute?
 

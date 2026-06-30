@@ -69,14 +69,15 @@ fuse文件系统性能测试：
 #建议不要更改scorpio.toml里面的load_dir_depth参数，否则要修改创建文件夹深度和访问深度
 #由于控制了加载深度，所以下面的测试不会访问到./4/5/6/1M_2_6.bin
 #启动mono服务，推送/tmp/test_time_文件夹到mono
-#scorpio下 cargo run 
+#scorpio 下启动主进程,例如:
+#cargo run --release -- --config-path scorpio.toml --http-addr 0.0.0.0:2725
 #测试首次加载的性能
-script/run /home/luxian/megadir/mount/third-party/test_202506162053/1/2/3
-script/run /home/luxian/megadir/mount/third-party/test_202506162053/2/2/3
+script/run /tmp/scorpio-megadir/mount/third-party/test_202506162053/1/2/3
+script/run /tmp/scorpio-megadir/mount/third-party/test_202506162053/2/2/3
 
-(base) root@yyjeqhc:~/git/mega/scorpio/script# ./run /home/luxian/megadir/mount/third-party/test_202506162053/1/2/3
-已切换到目录: /home/luxian/megadir/mount/third-party/test_202506162053/1/2/3
-当前工作目录: /home/luxian/megadir/mount/third-party/test_202506162053/1/2/3
+(base) root@yyjeqhc:~/git/mega/scorpio/script# ./run /tmp/scorpio-megadir/mount/third-party/test_202506162053/1/2/3
+已切换到目录: /tmp/scorpio-megadir/mount/third-party/test_202506162053/1/2/3
+当前工作目录: /tmp/scorpio-megadir/mount/third-party/test_202506162053/1/2/3
 path "./4" false
 path "./4/5" false
 path "./4/5/6" false
@@ -96,9 +97,9 @@ Stat 操作时间: 16.010µs
 文件读取时间: 17.573ms
 Stat 操作速率: 187382.89 文件/秒
 读取吞吐量: 170.72 MB/秒
-(base) root@yyjeqhc:~/git/mega/scorpio/script# ./run /home/luxian/megadir/mount/third-party/test_202506162053/2/2/3
-已切换到目录: /home/luxian/megadir/mount/third-party/test_202506162053/2/2/3
-当前工作目录: /home/luxian/megadir/mount/third-party/test_202506162053/2/2/3
+(base) root@yyjeqhc:~/git/mega/scorpio/script# ./run /tmp/scorpio-megadir/mount/third-party/test_202506162053/2/2/3
+已切换到目录: /tmp/scorpio-megadir/mount/third-party/test_202506162053/2/2/3
+当前工作目录: /tmp/scorpio-megadir/mount/third-party/test_202506162053/2/2/3
 path "./4" false
 path "./4/5" false
 path "./4/5/6" false
@@ -122,12 +123,12 @@ Stat 操作速率: 209117.52 文件/秒
 总结：初次加载目录和文件内容，网络开销大
 
 #测试加载缓存以后读取的性能
-script/run /home/luxian/megadir/mount/third-party/test_202506162053/1/2/3
-script/run /home/luxian/megadir/mount/third-party/test_202506162053/2/2/3
+script/run /tmp/scorpio-megadir/mount/third-party/test_202506162053/1/2/3
+script/run /tmp/scorpio-megadir/mount/third-party/test_202506162053/2/2/3
 
-(base) root@yyjeqhc:~/git/mega/scorpio/script# ./run /home/luxian/megadir/mount/third-party/test_202506162053/1/2/3
-已切换到目录: /home/luxian/megadir/mount/third-party/test_202506162053/1/2/3
-当前工作目录: /home/luxian/megadir/mount/third-party/test_202506162053/1/2/3
+(base) root@yyjeqhc:~/git/mega/scorpio/script# ./run /tmp/scorpio-megadir/mount/third-party/test_202506162053/1/2/3
+已切换到目录: /tmp/scorpio-megadir/mount/third-party/test_202506162053/1/2/3
+当前工作目录: /tmp/scorpio-megadir/mount/third-party/test_202506162053/1/2/3
 path "./4" false
 path "./4/5" false
 path "./4/5/6" false
@@ -148,9 +149,9 @@ Stat 操作时间: 10.790µs
 Stat 操作速率: 278035.22 文件/秒
 读取吞吐量: 250.40 MB/秒
 
-(base) root@yyjeqhc:~/git/mega/scorpio/script# ./run /home/luxian/megadir/mount/third-party/test_202506162053/2/2/3
-已切换到目录: /home/luxian/megadir/mount/third-party/test_202506162053/2/2/3
-当前工作目录: /home/luxian/megadir/mount/third-party/test_202506162053/2/2/3
+(base) root@yyjeqhc:~/git/mega/scorpio/script# ./run /tmp/scorpio-megadir/mount/third-party/test_202506162053/2/2/3
+已切换到目录: /tmp/scorpio-megadir/mount/third-party/test_202506162053/2/2/3
+当前工作目录: /tmp/scorpio-megadir/mount/third-party/test_202506162053/2/2/3
 path "./4" false
 path "./4/5" false
 path "./4/5/6" false

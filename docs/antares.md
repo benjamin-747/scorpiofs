@@ -36,11 +36,26 @@ flowchart TD
 
 ---
 
+## 访问方式与 URL 前缀
+
+Antares 路由可通过两种方式暴露,**路径前缀不同**:
+
+| 运行方式 | 默认地址 | 路由前缀 | 示例 |
+|---|---|---|---|
+| 主进程 `scorpio`(推荐) | `0.0.0.0:2725`(`--http-addr`) | `/antares/*` | `GET /antares/health` |
+| 独立 `antares serve` | `0.0.0.0:2726`(`--bind`) | 根路径 | `GET /health` |
+
+下文端点以**独立 `antares serve`** 的根路径书写(如 `GET /health`)。若通过主进程访问,在所有路径前加 `/antares` 前缀(如 `GET /antares/health`、`POST /antares/mounts`)。
+
+主进程同时保留 legacy API(`/api/fs/*`),见 [api.md](./api.md)。
+
+---
+
 ## API 端点
 
 ### 1. 健康检查
 
-**端点**: `GET /health`
+**端点**: `GET /health`（主进程: `GET /antares/health`）
 
 **描述**: 返回服务健康状态和运行信息。
 
@@ -211,6 +226,40 @@ flowchart TD
 
 ---
 
+### 4.2. 挂载就绪探针
+
+**端点**: `GET /mounts/{mount_id}/ready`（主进程: `GET /antares/mounts/{mount_id}/ready`）
+
+**描述**: 按挂载粒度检查 Dicfuse 预热是否完成,供构建系统或编排器做 readiness 探针。`ready: true` 表示 Phase 1(Dicfuse 内存缓存预热)已完成;Phase 2 内核缓存预热可能仍在后台进行。
+
+**路径参数**:
+- `mount_id`: 挂载的 UUID
+
+**响应** (200 OK):
+
+```json
+{
+  "mount_id": "550e8400-e29b-41d4-a716-446655440000",
+  "ready": true,
+  "state": "Ready"
+}
+```
+
+**字段说明**:
+- `ready`: `true` 当挂载生命周期状态为 `Ready`
+- `state`: 当前 `MountLifecycle` 状态(如 `Provisioning`、`Mounted`、`Ready`、`Unmounting` 等)
+
+**错误响应** (404 Not Found):
+
+```json
+{
+  "error": "mount 550e8400-e29b-41d4-a716-446655440000 not found",
+  "code": "NOT_FOUND"
+}
+```
+
+---
+
 ### 5. 删除挂载
 
 **端点**: `DELETE /mounts/{mount_id}`
@@ -357,6 +406,16 @@ paths:
           schema: { type: string }
       responses:
         "200": { description: OK }
+  /mounts/{mount_id}/ready:
+    get:
+      summary: Readiness probe for a mount
+      parameters:
+        - in: path
+          name: mount_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200": { description: OK }
   /mounts/{mount_id}/cl:
     post:
       summary: Build/Rebuild CL layer
@@ -391,11 +450,24 @@ paths:
 
 ## 典型用法（建议）
 
-### 启动守护进程
+### 方式 A: 主进程(推荐,单端口)
 
 ```bash
-# 在 scorpio 目录下
-cargo run -p scorpio --bin antares -- serve --bind 0.0.0.0:2726
+# 同时提供 legacy /api/fs/* 与 /antares/*
+cargo run --release -- --config-path scorpio.toml --http-addr 0.0.0.0:2725
+```
+
+```bash
+curl http://127.0.0.1:2725/antares/health
+curl -sS -X POST http://127.0.0.1:2725/antares/mounts \
+  -H 'content-type: application/json' \
+  -d '{"job_id":"job-123","path":"/third-party/mega","cl":"CL123"}'
+```
+
+### 方式 B: 独立 antares 守护进程
+
+```bash
+cargo run --release --bin antares -- serve --bind 0.0.0.0:2726
 ```
 
 ### 任务粒度挂载（推荐）
@@ -417,7 +489,7 @@ curl -sS -X DELETE http://127.0.0.1:2726/mounts/by-job/job-123
 ### 使用 CLI 走 HTTP（推荐用于构建客户端）
 
 ```bash
-cargo run -p scorpio --bin antares -- http-mount --endpoint http://127.0.0.1:2726 --job-id job-123 /third-party/mega --cl CL123
+cargo run --release --bin antares -- http-mount --endpoint http://127.0.0.1:2726 --job-id job-123 /third-party/mega --cl CL123
 ```
 
 ---
@@ -475,6 +547,8 @@ export interface MountLayers {
 export type MountLifecycle =
   | "Provisioning"
   | "Mounted"
+  | "Ready"
+  | "Quiescing"
   | "Unmounting"
   | "Unmounted"
   | { Failed: { reason: string } };
@@ -501,6 +575,12 @@ export interface HealthResponse {
   uptime_secs: number;
 }
 
+export interface MountReadyResponse {
+  mount_id: string; // UUID
+  ready: boolean;
+  state: MountLifecycle;
+}
+
 export type ErrorCode =
   | "INVALID_REQUEST"
   | "BAD_PAYLOAD"
@@ -521,6 +601,8 @@ export interface ErrorBody {
 
 - `"Provisioning"`: 正在准备中
 - `"Mounted"`: 已挂载
+- `"Ready"`: Dicfuse 目录树预热完成,可承受高强度 I/O(如 buck2 构建)
+- `"Quiescing"`: 进入 CL 切换窗口,控制面操作暂拒
 - `"Unmounting"`: 正在卸载
 - `"Unmounted"`: 已卸载
 - `{"Failed": {"reason": "String"}}`: 失败（包含失败原因）
@@ -559,21 +641,37 @@ antares list
 
 ## 配置
 
-Antares 从 `scorpio.toml` 配置文件中读取以下配置项：
+Antares 从 `scorpio.toml` 读取以下**扁平键**(当前实现不使用 `[antares]` 子表):
 
 ```toml
-[antares]
-mount_root = "/var/lib/antares/mounts"
-upper_root = "/var/lib/antares/upper"
-cl_root = "/var/lib/antares/cl"
-state_file = "/var/lib/antares/state.toml"
+antares_mount_root = "/tmp/scorpio-megadir/antares/mnt"
+antares_upper_root = "/tmp/scorpio-megadir/antares/upper"
+antares_cl_root = "/tmp/scorpio-megadir/antares/cl"
+antares_state_file = "/tmp/scorpio-megadir/antares/state.toml"
+
+# Antares 挂载使用的 Dicfuse 调优项(可选)
+antares_load_dir_depth = "3"
+antares_dicfuse_stat_mode = "fast"
+antares_dicfuse_dir_sync_ttl_secs = "120"
+antares_dicfuse_reply_ttl_secs = "60"
+antares_dicfuse_open_buff_max_bytes = "67108864"
+antares_dicfuse_open_buff_max_files = "1024"
 ```
 
-可以通过命令行参数覆盖配置：
-- `--mount-root`: 挂载点根目录
-- `--upper-root`: 上层根目录
-- `--cl-root`: CL 根目录
-- `--state-file`: 状态持久化文件
+共享服务配置(与主 FUSE 挂载共用)也在同一文件中:
+
+```toml
+base_url = "http://localhost:8000"
+workspace = "/tmp/scorpio-megadir/mount"
+store_path = "/tmp/scorpio-megadir/store"
+```
+
+`antares` 二进制可通过 CLI 覆盖上述路径(优先级高于配置文件):
+
+- `--mount-root`: 挂载点根目录(对应 `antares_mount_root`)
+- `--upper-root`: 上层根目录(对应 `antares_upper_root`)
+- `--cl-root`: CL 根目录(对应 `antares_cl_root`)
+- `--state-file`: 状态持久化文件(对应 `antares_state_file`)
 
 ---
 
@@ -648,12 +746,23 @@ curl -X DELETE http://localhost:2726/mounts/550e8400-e29b-41d4-a716-446655440000
 ### 健康检查
 
 ```bash
+# 独立 antares serve (端口 2726)
 curl http://localhost:2726/health
+
+# 主进程 scorpio (端口 2725)
+curl http://localhost:2725/antares/health
+```
+
+### 就绪探针
+
+```bash
+curl http://localhost:2725/antares/mounts/550e8400-e29b-41d4-a716-446655440000/ready
 ```
 
 ### 客户端超时与重试建议
 
 - `POST /mounts`：建议客户端 timeout 设为 **30–120s**（冷启动需要 Dicfuse 目录树 ready）
 - `GET /mounts*`：建议 **5s**（纯查询）
+- `GET /mounts/{id}/ready`：建议 **5–10s**（readiness 探针）
 - `DELETE /mounts*`：建议 **30s**（卸载可能等待）
 - `POST /mounts/{id}/cl`：建议 **60s**（依赖外部 CL 服务）

@@ -15,9 +15,9 @@ git/libra uses local storage (such as files or small databases) to save informat
 ## Implementation Strategy
 By leveraging the Libra-LFSClient module, a set of RESTful HTTP interfaces were redesigned to mimic the functionality of their command-line counterparts. The following key tasks were addressed:
 1. Managing `.libra_attributes` Files: This section primarily reuses existing code with minimal modifications, focusing on defining the specific save path for these files.
-2. Restoring Files via `lfs-checkout`: To optimize the restore process, the directory scope is restricted. The initial design includes all mount nodes while allowing manual specification of a parent directory for pull operations. To track the activation status of the LFS path, a dedicated mechanism is implemented and stored in `config.toml`. Pulled large files are saved either in the lower layer of the mounted inode (using `overlayfs`) or in a separate directory designated as the `read-only layer`.
+2. Restoring Files via `lfs-checkout`: To optimize the restore process, the directory scope is restricted. The initial design includes all mount nodes while allowing manual specification of a parent directory for pull operations. To track the activation status of the LFS path, a dedicated mechanism is implemented and stored in `config.toml` (the runtime state file, not the main `scorpio.toml` configuration). Pulled large files are saved either in the lower layer of the mounted inode (using ScorpioFS user-space `OverlayFs` semantics, not Linux kernel overlayfs) or in a separate directory designated as the `read-only layer`.
 3. Handling LFS File Pointers: A `KV-DB` is utilized to store the initial LFS file pointer information retrieved during the pull operation.
-4. Pushing Changes Back: Leveraging overlayfs, modified large files are quickly identified, and new file pointers are generated for them.
+4. Pushing Changes Back: Leveraging the user-space `OverlayFs` layer model, modified large files are quickly identified, and new file pointers are generated for them.
 5. Support for LFS Lock/Unlock: The system incorporates functionality to handle LFS locking and unlocking operations seamlessly.
 
 ```mermaid 
